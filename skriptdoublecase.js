@@ -397,6 +397,51 @@ function careNormalizeDuplicateText(value) {
     .trim();
 }
 
+function careIsOneEditAway(candidate, expected) {
+  if (candidate === expected || Math.abs(candidate.length - expected.length) > 1) return false;
+
+  if (candidate.length === expected.length) {
+    var mismatchIndexes = [];
+    for (var i = 0; i < expected.length; i++) {
+      if (candidate.charAt(i) !== expected.charAt(i)) mismatchIndexes.push(i);
+    }
+    if (mismatchIndexes.length === 1) return true;
+    return mismatchIndexes.length === 2 &&
+      mismatchIndexes[1] === mismatchIndexes[0] + 1 &&
+      candidate.charAt(mismatchIndexes[0]) === expected.charAt(mismatchIndexes[1]) &&
+      candidate.charAt(mismatchIndexes[1]) === expected.charAt(mismatchIndexes[0]);
+  }
+
+  var longer = candidate.length > expected.length ? candidate : expected;
+  var shorter = candidate.length > expected.length ? expected : candidate;
+  var longIndex = 0;
+  var shortIndex = 0;
+  var skippedCharacter = false;
+  while (longIndex < longer.length && shortIndex < shorter.length) {
+    if (longer.charAt(longIndex) === shorter.charAt(shortIndex)) {
+      longIndex++;
+      shortIndex++;
+    } else if (skippedCharacter) {
+      return false;
+    } else {
+      skippedCharacter = true;
+      longIndex++;
+    }
+  }
+  return true;
+}
+
+function careFindCommandTypo(text) {
+  var candidate = (text || "").toString().toLowerCase().replace(/[.!?,;:]+$/, "").trim();
+  if (!candidate || /\s/.test(candidate)) return "";
+
+  var commands = ["input"].concat(Object.keys(STATUS_COMMANDS));
+  for (var i = 0; i < commands.length; i++) {
+    if (careIsOneEditAway(candidate, commands[i])) return commands[i];
+  }
+  return "";
+}
+
 function careNormalizeDuplicateUrl(value) {
   var text = (value || "").toString();
   var match = text.match(/https?:\/\/[^\s\]\)]+/i);
@@ -695,7 +740,8 @@ function onMessage(event) {
     var threadName = (messageObj.thread && messageObj.thread.name) ? messageObj.thread.name : "";
     var messageName = messageObj.name || "";
     var spaceUrl   = careBuildThreadUrl(spaceName, threadName);
-    var textClean  = text.replace(/@(care(responder-app)?)/gi, "").trim();
+    var hasBotMention = /@care(?:responder(?:-app)?)?/i.test(text);
+    var textClean  = text.replace(/@care(?:responder(?:-app)?)?/gi, "").trim();
     var textForCommandCheck = textClean.replace(/["'“”‘’]/g, "").trim();
 
     if (/^input$/i.test(textForCommandCheck)) {
@@ -708,6 +754,25 @@ function onMessage(event) {
               "Silakan mention saya langsung di pesan laporannya, contoh:\n" +
               "@careresponder-app 8 Juli 2026 - Bundling Indosat\n[isi laporan]"
       });
+    }
+
+    var suggestedCommand = careFindCommandTypo(textForCommandCheck);
+    if (suggestedCommand) {
+      var typoWarning = "⚠️ Perintah tidak dikenali. Mungkin maksud Anda *" + suggestedCommand + "*.\n" +
+        "Pesan ini tidak dicatat ke sheet. Silakan kirim ulang dengan perintah yang benar.";
+      var typoCached = careAlreadyProcessed(messageName);
+      if (typoCached) return careSyncAck(threadName);
+      careMarkProcessed(messageName, typoWarning);
+      return careSendThreadedMessage(spaceName, threadName, { text: typoWarning });
+    }
+
+    if (hasBotMention && textForCommandCheck.length > 0 && textForCommandCheck.length <= 2) {
+      var shortMessageWarning = "⚠️ Pesan terlalu singkat dan tidak dikenali sebagai perintah. Pesan ini tidak dicatat ke sheet.\n" +
+        "Kirim ulang perintah yang benar atau sertakan isi laporan setelah mention bot.";
+      var shortMessageCached = careAlreadyProcessed(messageName);
+      if (shortMessageCached) return careSyncAck(threadName);
+      careMarkProcessed(messageName, shortMessageWarning);
+      return careSendThreadedMessage(spaceName, threadName, { text: shortMessageWarning });
     }
 
     var statusCommandKey = textForCommandCheck.toLowerCase();
